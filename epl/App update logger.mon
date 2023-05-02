@@ -199,6 +199,6 @@ event GitHandler
 
 monitor GitHandlerMonitor {
 	action onload() {
-		GitHandler.create("mjj29", "epl-apps-test-sync-target", "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", "main").startHandler();
+		GitHandler.create("mjj29", "epl-apps-test-sync-target", "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", "main").startHandler();
 	}
 }
