@@ -1,4 +1,4 @@
-/** Basic event definitions foo */
+/** Basic event definitions */
 using com.apama.cumulocity.ManagedObject;
 using com.apama.cumulocity.FindManagedObject;
 using com.apama.cumulocity.FindManagedObjectResponse;
