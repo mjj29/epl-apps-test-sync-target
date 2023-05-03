@@ -37,5 +37,6 @@ monitor MySampleMonitor {
 	/** Initialize the application */
 	action onload() {
 		// Application starts here
+		print "foo";
 	}
 }
