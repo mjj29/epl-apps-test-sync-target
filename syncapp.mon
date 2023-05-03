@@ -1,12 +1,12 @@
 
 using com.apama.cumulocity.ManagedObject;
-using com.apama.cumulocity.FindTenantOption;
-using com.apama.cumulocity.FindTenantOptionResponse;
-using com.apama.cumulocity.TenantOption;
 using com.apama.util.AnyExtractor;
 using com.apama.json.JSONPlugin;
 using com.apama.functional.Fn;
 using com.apama.functional.Functional;
+using com.apama.cumulocity.FindTenantOption;
+using com.apama.cumulocity.FindTenantOptionResponse;
+using com.apama.cumulocity.TenantOption;
 using com.softwareag.connectivity.httpclient.HttpTransport;
 using com.softwareag.connectivity.httpclient.HttpOptions;
 using com.softwareag.connectivity.httpclient.Request;
@@ -50,14 +50,16 @@ event Fn2
 
 event GitUpdate
 {
-	static action create(string repo, string auth, string branch, HttpTransport http) returns GitUpdate
+	static action AnyExtractorcreate(any a) returns AnyExtractor { sequence<com.apama.util.AnyExtractor> _; return AnyExtractor(a); }
+	static action create(string repo, string auth, string branch, HttpTransport http, sequence<optional<string>> latestHash) returns GitUpdate
 	{
-		return <GitUpdate> Fn2.setFields(new GitUpdate, [<any>repo, auth, branch, http]);
+		return <GitUpdate> Fn2.setFields(new GitUpdate, [<any>repo, auth, branch, http, latestHash]);
 	}
 	string repo;
 	string auth;
 	string branch;
 	HttpTransport http;	
+	sequence<optional<string>> latestHash;
 	dictionary<string,string> commit;
 	string headcommithash;
 
@@ -80,7 +82,7 @@ event GitUpdate
 	action pathNotInCommits(any treeentry) returns boolean
 	{
 		AnyExtractor ae := AnyExtractor(treeentry);
-		return commit.hasKey(ae.getStringOr("path", ""));
+		return not commit.hasKey(ae.getStringOr("path", ""));
 	}
 	static action createTreeEntry(string path, string hash) returns any
 	{
@@ -133,6 +135,7 @@ event GitUpdate
 	action complete(Response r)
 	{
 		log "Completed creating commit: "+r.toString();
+		latestHash[0] := r.payload.getString("object.sha");
 	}
 	action createRestAPIQuery(string method, string path, any content) returns Request
 	{
@@ -140,6 +143,56 @@ event GitUpdate
 		Request req := http.createRequest(method, path.replaceAll(repo, ""), content, <HttpOptions>Fn2.setFields(new HttpOptions, {"headers":{"Accept":"application/vnd.github+json", "Authorization":auth}}));
 		req.id := integer.incrementCounter("com.softwareag.connectivity.httpclient.HTTPClientGeneric"); 
 		return req;
+	}
+	
+	action checkForCommits()
+	{
+		createRestAPIQuery("GET", "/git/ref/heads/"+branch, new any).execute(checkLatestHash);
+	}
+	action checkLatestHash(Response r)
+	{
+		string remoteHash := r.payload.getString("object.sha");
+		ifpresent latestHash[0] as h {
+			log "latestHash="+h+", remoteHash="+remoteHash;
+			if remoteHash != h {
+				updateFromGit(remoteHash, r.payload.getString("object.url"));
+			}
+		} else {
+			log "Current hash unset, checking";
+			updateFromGit(remoteHash, r.payload.getString("object.url"));
+		}
+		latestHash[0] := remoteHash;
+	}
+	action updateFromGit(string headrefhash, string headrefurl)
+	{
+		createRestAPIQuery("GET", headrefurl, new any).execute(getHeadCommitForUpdate);
+	}
+	action getHeadCommitForUpdate(Response r)
+	{
+		log "Got response: "+r.toString();
+		headcommithash := r.payload.getString("sha");
+		string headtreehash := r.payload.getString("tree.sha");
+		string headtreeurl := r.payload.getString("tree.url");
+		createRestAPIQuery("GET", headtreeurl+"?recursive=1", new any).execute(updateFromTree);
+	}
+	action updateFromTree(Response r)
+	{
+		log "Got response: "+r.toString();
+		Functional tree := Functional(r.payload.getAny("tree"));
+		any _ := tree.map(AnyExtractorcreate).filter(Fn.partial(pathMatches, "epl/.*.mon")).map(Fn.partial(updateEPLFileFromGit, [tree.get()]));
+		_ := tree.map(AnyExtractorcreate).filter(Fn.partial(pathMatches, "model/.*.json")).map(Fn.partial(updateABModelFromGit, [tree.get()]));
+	}
+	static action pathMatches(string regex, AnyExtractor data) returns boolean
+	{
+		return data.getString("path").matches(regex);
+	}
+	action updateEPLFileFromGit(any tree, AnyExtractor eplfile)
+	{
+		log "Updating EPLFile from "+eplfile.toString();
+	}
+	action updateABModelFromGit(any tree, AnyExtractor model)
+	{
+		log "Updating AB Model from "+model.toString();
 	}
 }
 
@@ -151,17 +204,19 @@ event GitHandler
 			"repo":<any>("https://api.github.com/repos/"+owner+"/"+repo),
 			"auth":"Bearer "+PAT,
 			"branch":branch,
-			"http":HttpTransport.getOrCreateWithConfigurations("api.github.com", 443, {HttpTransport.CONFIG_TLS: "true", HttpTransport.CONFIG_BASE_PATH: "/repos/"+owner+"/"+repo})
+			"http":HttpTransport.getOrCreateWithConfigurations("api.github.com", 443, {HttpTransport.CONFIG_TLS: "true", HttpTransport.CONFIG_BASE_PATH: "/repos/"+owner+"/"+repo}),
+			"latestHash":[new optional<string>]
 			});
 	}
 	string repo;
 	string auth;
 	string branch;
 	HttpTransport http;
+	sequence<optional<string>> latestHash;
 
 	action updateEPLFile(string name, string contents, string description, string state)
 	{
-		GitUpdate update := GitUpdate.create(repo, auth, branch, http);
+		GitUpdate update := GitUpdate.create(repo, auth, branch, http, latestHash);
 		any _ := Functional({
 			"epl/"+name+".mon":contents,
 			"epl/"+name+".state": state,
@@ -174,7 +229,7 @@ event GitHandler
 
 	action updateABModel(string name, string model, string description, string state)
 	{
-		GitUpdate update := GitUpdate.create(repo, auth, branch, http);
+		GitUpdate update := GitUpdate.create(repo, auth, branch, http, latestHash);
 		any _ := Functional({
 			"model/"+name+".json": model,
 			"model/"+name+".state": state,
@@ -198,6 +253,10 @@ event GitHandler
 			AnyExtractor ae := AnyExtractor(a.params);			
 			updateABModel(a.name, JSONPlugin.toJSON(a.params.getOr("builderModel", new dictionary<any, any>)), ae.getStringOr("description", ""), JSONPlugin.toJSON({"mode":ae.getStringOr("mode", ""), "modeProperties":ae.getStringOr("modeProperties", ""), "state":ae.getStringOr("state", "")}));
 		}
+		on all wait(10.0) {
+			GitUpdate.create(repo, auth, branch, http, latestHash).checkForCommits();			
+		}
+		GitUpdate.create(repo, auth, branch, http, latestHash).checkForCommits();
 	}
 
 }
