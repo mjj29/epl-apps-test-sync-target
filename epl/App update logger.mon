@@ -187,13 +187,51 @@ event GitUpdate
 	{
 		return data.getString("path").matches(regex);
 	}
+	action findURLInTree(any tree, string path) returns string
+	{
+		return <string>(<sequence<any>>Functional(tree).filter(Fn.partial(Fn.fieldEqual, ["path", path])).map(Fn.getEntry("url")).get())[0];
+	}
+	action requestBlob(string url) returns integer
+	{
+		Request r := createRestAPIQuery("GET", url, new any);
+		send r to r.channel;
+		return r.id;
+	}
+	action receiveBlob(action<> doUpdate, string name, integer requestId)
+	{
+		on Response(id=requestId) as r {
+			log "Got blob "+r.toString();
+			commit[name] := r.payload.getString("content");
+			if commit.size() = 3 { doUpdate(); commit.clear(); }
+		}
+	}
+	action updateEPLInC8Y()
+	{
+		log "Updating EPL from "+commit.toString();
+	}
+	action updateABInC8Y()
+	{
+		log "Updating EPL from "+commit.toString();
+	}
 	action updateEPLFileFromGit(any tree, AnyExtractor eplfile)
 	{
 		log "Updating EPLFile from "+eplfile.toString();
+		any _ := Functional({"monitor":eplfile.getString("path"), 
+			"description":eplfile.getString("path").replaceAll(".mon",".txt"),
+			"state":eplfile.getString("path").replaceAll(".mon", ".state")})
+			.map(Fn.partial(findURLInTree, [tree]))
+			.map(requestBlob)
+			.map(Fn.partial(receiveBlob, updateEPLInC8Y));
 	}
 	action updateABModelFromGit(any tree, AnyExtractor model)
 	{
 		log "Updating AB Model from "+model.toString();
+		any _ := Functional({"monitor":model.getString("path"), 
+			"description":model.getString("path").replaceAll(".json",".txt"),
+			"state":model.getString("path").replaceAll(".json", ".state")})
+			.map(Fn.partial(findURLInTree, [tree]))
+			.map(requestBlob)
+			.map(Fn.partial(receiveBlob, updateABInC8Y));
 	}
 }
 
