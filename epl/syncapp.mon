@@ -37,13 +37,13 @@ event Base64
 		else if c1 >=32 and c1 <= 127  { rv := rv+a7chars.substring(c1-32,c1-31); }
 		if c2 = 10 { rv := rv+"\n"; }
 		else if c2 >=32 and c2 <= 127  { rv := rv+a7chars.substring(c2-32,c2-31); }
-		print c3.toString();
 		if c3 = 10 { rv := rv+"\n"; }
 		else if c3 >=32 and c3 <= 127 { rv := rv+a7chars.substring(c3-32,c3-31); }
 		return rv;
 	}
 	static action decode(string base64) returns string
 	{
+		base64 := base64.replaceAll("\n", "");
 		string s := "";
 		integer i := 0;
 		integer l := base64.length();
@@ -205,7 +205,9 @@ event GitUpdate
 	}
 	action updateEPLFileFromResponse(Response r)
 	{
-		log "Updating EPLFile from "+Base64.decode(r.payload.getString("content"));
+		string content := r.payload.getString("content");
+		log "Updating EPLFile from "+content;
+		log "decodes to "+Base64.decode(content);
 	}
 	action updateABModelFromGit(any tree, AnyExtractor model)
 	{
