@@ -1,11 +1,12 @@
 
 using com.apama.cumulocity.ManagedObject;
+using com.apama.cumulocity.Util;
 using com.apama.util.AnyExtractor;
 using com.apama.json.JSONPlugin;
 using com.apama.functional.Fn;
 using com.apama.functional.Functional;
-using com.apama.cumulocity.FindTenantOption;
-using com.apama.cumulocity.FindTenantOptionResponse;
+using com.apama.cumulocity.FindTenantOptions;
+using com.apama.cumulocity.FindTenantOptionsResponse;
 using com.apama.cumulocity.TenantOption;
 using com.softwareag.connectivity.httpclient.HttpTransport;
 using com.softwareag.connectivity.httpclient.HttpOptions;
@@ -15,7 +16,7 @@ using com.softwareag.connectivity.httpclient.Response;
 event Base64
 {
 	constant string b64chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	constant string a7chars := " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+	constant string a7chars := " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ";
 	static action decode4(string base64, integer start, integer end) returns string
 	{
 		integer b1 := 0;
@@ -32,13 +33,17 @@ event Base64
 		integer c3 := b4+((b3 and 3)<<6);
 
 		string rv := "";
-		if c1 >=32 and c1 <= 127  { rv := rv+a7chars.substring(c1-32,c1-31); }
-		if c2 >=32 and c2 <= 127  { rv := rv+a7chars.substring(c2-32,c2-31); }
-		if c3 >=32 and c3 <= 127 { rv := rv+a7chars.substring(c3-32,c3-31); }
+		if c1 = 10 { rv := rv+"\n"; }
+		else if c1 >=32 and c1 <= 127  { rv := rv+a7chars.substring(c1-32,c1-31); }
+		if c2 = 10 { rv := rv+"\n"; }
+		else if c2 >=32 and c2 <= 127  { rv := rv+a7chars.substring(c2-32,c2-31); }
+		if c3 = 10 { rv := rv+"\n"; }
+		else if c3 >=32 and c3 <= 127 { rv := rv+a7chars.substring(c3-32,c3-31); }
 		return rv;
 	}
 	static action decode(string base64) returns string
 	{
+		base64 := base64.replaceAll("\n", "");
 		string s := "";
 		integer i := 0;
 		integer l := base64.length();
@@ -154,6 +159,7 @@ event GitUpdate
 	}
 	action checkLatestHash(Response r)
 	{
+		log "Response="+r.toString();
 		string remoteHash := r.payload.getString("object.sha");
 		ifpresent latestHash[0] as h {
 			log "latestHash="+h+", remoteHash="+remoteHash;
@@ -192,10 +198,30 @@ event GitUpdate
 	action updateEPLFileFromGit(any tree, AnyExtractor eplfile)
 	{
 		log "Updating EPLFile from "+eplfile.toString();
+		string path := eplfile.getString("path");
+		string bloburl := eplfile.getString("url");
+		commit[bloburl] := path;
+		createRestAPIQuery("GET", bloburl, new any).execute(updateEPLFileFromResponse);
+	}
+	action updateEPLFileFromResponse(Response r)
+	{
+		string content := r.payload.getString("content");
+		log "Updating EPLFile from "+content;
+		log "decodes to "+Base64.decode(content);
+	}	
+	action updateABModelFromResponse(Response r)
+	{
+		string content := r.payload.getString("content");
+		log "Updating ABModel from "+content;
+		log "decodes to "+Base64.decode(content);
 	}
 	action updateABModelFromGit(any tree, AnyExtractor model)
 	{
 		log "Updating AB Model from "+model.toString();
+		string path := model.getString("path");
+		string bloburl := model.getString("url");
+		commit[bloburl] := path;
+		createRestAPIQuery("GET", bloburl, new any).execute(updateABModelFromResponse);
 	}
 }
 
@@ -267,17 +293,17 @@ event GitHandler
 monitor GitHandlerMonitor {
 	action onload() {
 		monitor.subscribe(FindTenantOptionsResponse.SUBSCRIBE_CHANNEL);
-		on FindTenantOptionsResponse(reqId=Fn.sendToChannel(FindTenantOptions.SEND_CHANNEL, Fn.setEntries(new FindTenantOptions, {"reqId":Util.generateReqId(), "category":"github"}).reqId)) as options {
+		on FindTenantOptionsResponse(reqId=(<FindTenantOptions>Fn.sendToChannel(FindTenantOptions.SEND_CHANNEL, Fn.setFields(new FindTenantOptions, {"reqId":Util.generateReqId(), "category":"github"}))).reqId) as options {
 			TenantOption opt;
-			string owner="";
-			string repository="";
-			string pat="";
-			string branch="";
+			string owner:="";
+			string repository:="";
+			string pat:="";
+			string branch:="";
 			for opt in options.options {
-				if opt.key = "owner" { owner=opt.value; }
-				if opt.key = "repo" { repository=opt.value; }
-				if opt.key = "PAT" { pat=opt.value; }
-				if opt.key = "branch" { branch=opt.value; }
+				if opt.key = "owner" { owner:=opt.value; }
+				if opt.key = "repo" { repository:=opt.value; }
+				if opt.key = "PAT" { pat:=opt.value; }
+				if opt.key = "branch" { branch:=opt.value; }
 			}
 			if owner!="" and repository!="" and pat!="" and branch!="" {
 				GitHandler.create(owner, repository, pat, branch).startHandler();
