@@ -16,7 +16,7 @@ using com.softwareag.connectivity.httpclient.Response;
 event Base64
 {
 	constant string b64chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	constant string a7chars := " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+	constant string a7chars := " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ";
 	static action decode4(string base64, integer start, integer end) returns string
 	{
 		integer b1 := 0;
@@ -35,6 +35,7 @@ event Base64
 		string rv := "";
 		if c1 >=32 and c1 <= 127  { rv := rv+a7chars.substring(c1-32,c1-31); }
 		if c2 >=32 and c2 <= 127  { rv := rv+a7chars.substring(c2-32,c2-31); }
+		print c3.toString();
 		if c3 >=32 and c3 <= 127 { rv := rv+a7chars.substring(c3-32,c3-31); }
 		return rv;
 	}
@@ -194,6 +195,14 @@ event GitUpdate
 	action updateEPLFileFromGit(any tree, AnyExtractor eplfile)
 	{
 		log "Updating EPLFile from "+eplfile.toString();
+		string path := eplfile.getString("path");
+		string bloburl := eplfile.getString("url");
+		commit[bloburl] := path;
+		createRestAPIQuery("GET", bloburl, new any).execute(updateEPLFileFromResponse);
+	}
+	action updateEPLFileFromResponse(Response r)
+	{
+		log "Updating EPLFile from "+Base64.decode(r.payload.getString("content"));
 	}
 	action updateABModelFromGit(any tree, AnyExtractor model)
 	{
