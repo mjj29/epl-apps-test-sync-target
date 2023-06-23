@@ -33,10 +33,13 @@ event Base64
 		integer c3 := b4+((b3 and 3)<<6);
 
 		string rv := "";
-		if c1 >=32 and c1 <= 127  { rv := rv+a7chars.substring(c1-32,c1-31); }
-		if c2 >=32 and c2 <= 127  { rv := rv+a7chars.substring(c2-32,c2-31); }
+		if c1 = 10 { rv := rv+"\n"; }
+		else if c1 >=32 and c1 <= 127  { rv := rv+a7chars.substring(c1-32,c1-31); }
+		if c2 = 10 { rv := rv+"\n"; }
+		else if c2 >=32 and c2 <= 127  { rv := rv+a7chars.substring(c2-32,c2-31); }
 		print c3.toString();
-		if c3 >=32 and c3 <= 127 { rv := rv+a7chars.substring(c3-32,c3-31); }
+		if c3 = 10 { rv := rv+"\n"; }
+		else if c3 >=32 and c3 <= 127 { rv := rv+a7chars.substring(c3-32,c3-31); }
 		return rv;
 	}
 	static action decode(string base64) returns string
