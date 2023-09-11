@@ -4,9 +4,13 @@ using com.apama.cumulocity.Util;
 using com.apama.util.AnyExtractor;
 using com.apama.json.JSONPlugin;
 using com.apama.functional.Fn;
+using com.apama.functional.Partial;
 using com.apama.functional.Functional;
 using com.apama.cumulocity.FindTenantOptions;
 using com.apama.cumulocity.FindTenantOptionsResponse;
+using com.apama.cumulocity.FindManagedObject;
+using com.apama.cumulocity.FindManagedObjectResponse;
+using com.apama.cumulocity.FindManagedObjectResponseAck;
 using com.apama.cumulocity.TenantOption;
 using com.softwareag.connectivity.httpclient.HttpTransport;
 using com.softwareag.connectivity.httpclient.HttpOptions;
@@ -57,16 +61,196 @@ event Base64
 	}
 }
 
+event RequestBuilder
+{
+	string repo;
+	string auth;
+	HttpTransport http;
+	string branch;
+	action createRestAPIQuery(string method, string path, any content) returns Request
+	{
+		log "createRequestAPIQuery("+method+", "+path.replaceAll(repo, "")+", "+content.toString()+")";
+		Request req := http.createRequest(method, path.replaceAll(repo, ""), content, <HttpOptions>Fn.setFields(new HttpOptions, {"headers":{"Accept":"application/vnd.github+json", "Authorization":auth}}));
+		req.id := integer.incrementCounter("com.softwareag.connectivity.httpclient.HTTPClientGeneric"); 
+		return req;
+	}
+}
+
+event GITFile
+{
+	static action create(string path, any tree, RequestBuilder builder) returns GITFile
+	{
+		return <GITFile>Fn.setFields(new GITFile, [path, tree, builder]);
+	}
+	string path;
+	any tree;
+	RequestBuilder builder;
+	any nextAction;
+	string content;
+	action getFromGit(any nextAction)
+	{
+		sequence<com.softwareag.connectivity.httpclient.Request> dummy;
+		self.nextAction := nextAction;
+		log "getFromGit(tree="+tree.toString()+")";
+		any _ := Functional(tree)
+			.filter(Fn.partial(Fn.fieldEqual, ["path", path]))
+			.map(Fn.getEntry("url"))
+			.map(Fn.partial(builder.createRestAPIQuery, ["GET", Fn.$(1), new any]))
+			.map(Fn.callAction("execute", readContent));
+	}
+	action readContent(Response r)
+	{
+		content := Base64.decode(r.payload.getString("content"));
+		any _ := nextAction.getGenericAction()(new sequence<any>);
+	}
+}
+
+event GetObject
+{
+	RequestBuilder builder;
+	any next;
+	action urlImpl(string url, any next, any arg)
+	{
+		self.next := next;
+		url := url.replaceAll("$1", <string>arg);
+		builder.createRestAPIQuery("GET", url, new any).execute(invokeNextWithBody);
+	}
+	action invokeNextWithBody(Response r)
+	{
+		any _ := next.getGenericAction()([<any>r.payload]);
+	}
+	action url(string url, any next) returns Partial { return Fn.partial(urlImpl, [url, next]); }
+	action extractImpl(string path, any next, AnyExtractor object)
+	{
+		any _ := next.getGenericAction()([object.getAny(path)]);
+	}
+	action extract(string path, any next) returns Partial { return Fn.partial(extractImpl, [path, next]); }
+	action setImpl(any object, string field, any next, any value)
+	{
+		object.setField(field, value);
+		any _ := next.getGenericAction()([object]);
+	}
+	action set(any object, string field, any next) returns Partial { return Fn.partial(setImpl, [object, field, next]); }
+}
+event EPLFile
+{
+	string c8yname;
+	string c8ydescription;
+	string c8ystate;
+	string c8ycontent;
+	string c8yid;
+	string gitdescription;
+	string gitstate;
+	string gitcontent;
+	string gitpath;
+	any gittree;
+	any update;
+	RequestBuilder builder;
+
+	action needsUpdate() returns boolean
+	{
+		return
+			c8ydescription != gitdescription or
+			c8ystate != gitstate or
+			c8ycontent != gitcontent;
+	}
+	action checkForUpdate(action<> onUpdateNeeded)
+	{
+		if needsUpdate() { onUpdateNeeded(); }
+	}
+
+	static action createFromC8Y(any update, string id, string name, string description, string state, string content) returns EPLFile
+	{
+		return <EPLFile> Fn.setFields(new EPLFile,
+				{"c8yid":id, "c8yname":name, "c8ydescription":description, "c8ystate":state, "c8ycontent":content,
+				"update":update, "builder":update.getEntry("builder")});
+	}
+	
+	static action createFromGit(any update, string gitpath, any tree) returns EPLFile
+	{
+		return <EPLFile> Fn.setFields(new EPLFile,
+				{"gitpath":gitpath, "gittree":tree,
+				"update":update, "builder":update.getEntry("builder")});
+	}
+
+	action commitToGit()
+	{
+		any _ := Functional({
+			"epl/"+c8yname+".mon":c8ycontent,
+			"epl/"+c8yname+".state": c8ystate,
+			"epl/"+c8yname+".txt": c8ydescription
+		})
+			.map(update.getAction("writeFile"))
+			.map(update.getAction("getWriteResponse"));
+			//.waitForAllCompleted("com.softwareag.connectivity.httpclient.Response", "id", update.doCommit);
+	}
+
+	action uploadToC8Y()
+	{
+		send Fn.setFields(new ManagedObject, {"id":<any>c8yid, "type":"apama_eplfile", "name":c8yname, "params":{"apama_eplfile.contents":c8ycontent, "apama_eplfile.description":c8ydescription, "apama_eplfile.state":c8ystate}}) to ManagedObject.SEND_CHANNEL;
+	}
+
+	action updateFromGit(any completedAction)
+	{
+		if gittree.empty() {
+			GetObject go := GetObject(builder, new any);
+			go.url("/git/ref/heads/"+builder.branch,
+				go.extract("object.url",
+					go.url("$1",
+						go.extract("tree.url",
+							go.url("$1?recursive=1",
+								go.extract("tree",
+									go.set(self, "gittree",
+										Fn.partial(updateFromGitImpl, completedAction).exec
+										)))))));
+		} else {
+			updateFromGitImpl(completedAction);
+		}
+	}
+	action updateFromGitImpl(any completedAction)
+	{
+		GITFile monfile := GITFile.create(gitpath, gittree, builder);
+		GITFile statefile := GITFile.create(gitpath.replaceAll(".mon", ".state"), gittree, builder);
+		GITFile txtfile := GITFile.create(gitpath.replaceAll(".mon", ".txt"), gittree, builder);
+		monfile.getFromGit(Fn.partial(statefile.getFromGit, Fn.partial(txtfile.getFromGit, Fn.partial(readGitResponses, [monfile, statefile, txtfile, completedAction]).exec).exec).exec);
+	}
+
+	action readGitResponses(GITFile monfile, GITFile statefile, GITFile txtfile, any completedAction)
+	{
+		gitcontent := monfile.content;
+		gitstate := statefile.content;
+		gitdescription := txtfile.content;
+		any _ := completedAction.getGenericAction()(new sequence<any>);
+	}
+	
+	action updateFromC8Y(any completedAction)
+	{
+		integer reqId := Util.generateReqId();
+		on FindManagedObjectResponse(reqId=reqId) as resp and not FindManagedObjectResponseAck(reqId=reqId)
+		{
+			AnyExtractor ae := AnyExtractor(resp.managedObject.params);
+			c8ycontent := ae.getStringOr("apama_eplfile.contents", "");
+			c8ydescription := ae.getStringOr("apama_eplfile.description", "");
+			c8ystate := ae.getStringOr("apama_eplfile.state", "");
+			c8yid := resp.managedObject.id;
+			c8yname := resp.managedObject.name;
+		}
+		on FindManagedObjectResponseAck(reqId=reqId)
+		{
+			any _ := completedAction.getGenericAction()(new sequence<any>);
+		}
+		send FindManagedObject(reqId, "", {"type":"apama_eplfile", "name": gitpath.replace("epl/(.*).mon", "$1")}) to FindManagedObject.SEND_CHANNEL;
+	}
+}
 event GitUpdate
 {
 	static action create(string repo, string auth, string branch, HttpTransport http, sequence<optional<string>> latestHash) returns GitUpdate
 	{
-		return <GitUpdate> Fn.setFields(new GitUpdate, [<any>repo, auth, branch, http, latestHash]);
+		return <GitUpdate> Fn.setFields(new GitUpdate, [<any> RequestBuilder(repo, auth, http, branch), branch, latestHash]);
 	}
-	string repo;
-	string auth;
+
+	RequestBuilder builder;
 	string branch;
-	HttpTransport http;	
 	sequence<optional<string>> latestHash;
 	dictionary<string,string> commit;
 	string headcommithash;
@@ -83,7 +267,7 @@ event GitUpdate
 	action writeFile(string name, string data) returns integer
 	{
 		log "Writing file "+name+" ("+data+")";
-		Request r := createRestAPIQuery("POST", "/git/blobs", {"content":data, "encoding":"utf-8"});
+		Request r := builder.createRestAPIQuery("POST", "/git/blobs", {"content":data, "encoding":"utf-8"});
 		send r to r.channel;
 		return r.id;
 	}
@@ -103,15 +287,15 @@ event GitUpdate
 	}
 	action doCommit()
 	{
-		log "Committing to "+repo+": "+commit.toString();
-		createRestAPIQuery("GET", "/git/ref/heads/"+branch, new any).execute(getHeadRef);
+		log "Committing to "+builder.repo+": "+commit.toString();
+		builder.createRestAPIQuery("GET", "/git/ref/heads/"+branch, new any).execute(getHeadRef);
 	}
 	action getHeadRef(Response r)
 	{
 		log "Got response: "+r.toString();
 		string headrefhash := r.payload.getString("object.sha");
 		string headrefurl := r.payload.getString("object.url");
-		createRestAPIQuery("GET", headrefurl, new any).execute(getHeadCommit);
+		builder.createRestAPIQuery("GET", headrefurl, new any).execute(getHeadCommit);
 	}
 	action getHeadCommit(Response r)
 	{
@@ -119,43 +303,36 @@ event GitUpdate
 		headcommithash := r.payload.getString("sha");
 		string headtreehash := r.payload.getString("tree.sha");
 		string headtreeurl := r.payload.getString("tree.url");
-		createRestAPIQuery("GET", headtreeurl+"?recursive=1", new any).execute(createTree);
+		builder.createRestAPIQuery("GET", headtreeurl+"?recursive=1", new any).execute(createTree);
 	}
 	action createTree(Response r)
 	{
 		log "Got response: "+r.toString();
 		sequence<any> treedata := <sequence<any>> Functional(r.payload.getAny("tree")).filter(Fn.isNot(Fn.partial(Fn.fieldEqual, ["type", "tree"]))).filter(pathNotInCommits).get();
 		any _ := Functional(commit).filter(Fn.isNot(Fn.isEmpty)).map(createTreeEntry).map(treedata.append);
-		createRestAPIQuery("POST", "/git/trees", {"tree":treedata}).execute(createCommit);
+		builder.createRestAPIQuery("POST", "/git/trees", {"tree":treedata}).execute(createCommit);
 	}
 	action createCommit(Response r)
 	{
 		log "Got response: "+r.toString();
 		string newtreehash := r.payload.getString("sha");
-		createRestAPIQuery("POST", "/git/commits", {"message":<any>"Update C8Y", "parents":[headcommithash], "tree":newtreehash, "author":{"name":"EPL Apps", "email":"automatic.eplapps@streaminganalytics.c8y"}}).execute(updateHEAD);
+		builder.createRestAPIQuery("POST", "/git/commits", {"message":<any>"Update C8Y", "parents":[headcommithash], "tree":newtreehash, "author":{"name":"EPL Apps", "email":"automatic.eplapps@streaminganalytics.c8y"}}).execute(updateHEAD);
 	}
 	action updateHEAD(Response r)
 	{
 		log "Got response: "+r.toString();
 		string newcommithash := r.payload.getString("sha");
-		createRestAPIQuery("PATCH", "/git/refs/heads/"+branch, {"sha":<any>newcommithash, "force":true}).execute(complete);
+		builder.createRestAPIQuery("PATCH", "/git/refs/heads/"+branch, {"sha":<any>newcommithash, "force":true}).execute(complete);
 	}
 	action complete(Response r)
 	{
 		log "Completed creating commit: "+r.toString();
 		latestHash[0] := r.payload.getString("object.sha");
 	}
-	action createRestAPIQuery(string method, string path, any content) returns Request
-	{
-		log "createRequestAPIQuery("+method+", "+path.replaceAll(repo, "")+", "+content.toString()+")";
-		Request req := http.createRequest(method, path.replaceAll(repo, ""), content, <HttpOptions>Fn.setFields(new HttpOptions, {"headers":{"Accept":"application/vnd.github+json", "Authorization":auth}}));
-		req.id := integer.incrementCounter("com.softwareag.connectivity.httpclient.HTTPClientGeneric"); 
-		return req;
-	}
 	
 	action checkForCommits()
 	{
-		createRestAPIQuery("GET", "/git/ref/heads/"+branch, new any).execute(checkLatestHash);
+		builder.createRestAPIQuery("GET", "/git/ref/heads/"+branch, new any).execute(checkLatestHash);
 	}
 	action checkLatestHash(Response r)
 	{
@@ -174,7 +351,7 @@ event GitUpdate
 	}
 	action updateFromGit(string headrefhash, string headrefurl)
 	{
-		createRestAPIQuery("GET", headrefurl, new any).execute(getHeadCommitForUpdate);
+		builder.createRestAPIQuery("GET", headrefurl, new any).execute(getHeadCommitForUpdate);
 	}
 	action getHeadCommitForUpdate(Response r)
 	{
@@ -182,7 +359,7 @@ event GitUpdate
 		headcommithash := r.payload.getString("sha");
 		string headtreehash := r.payload.getString("tree.sha");
 		string headtreeurl := r.payload.getString("tree.url");
-		createRestAPIQuery("GET", headtreeurl+"?recursive=1", new any).execute(updateFromTree);
+		builder.createRestAPIQuery("GET", headtreeurl+"?recursive=1", new any).execute(updateFromTree);
 	}
 	action updateFromTree(Response r)
 	{
@@ -200,8 +377,8 @@ event GitUpdate
 		log "Updating EPLFile from "+eplfile.toString();
 		string path := eplfile.getString("path");
 		string bloburl := eplfile.getString("url");
-		commit[bloburl] := path;
-		createRestAPIQuery("GET", bloburl, new any).execute(updateEPLFileFromResponse);
+		EPLFile file := EPLFile.createFromGit(self, eplfile.getString("path"), tree);
+		file.updateFromGit(Fn.partial(file.updateFromC8Y, Fn.partial(file.checkForUpdate, file.uploadToC8Y).exec).exec);
 	}
 	action updateEPLFileFromResponse(Response r)
 	{
@@ -221,7 +398,7 @@ event GitUpdate
 		string path := model.getString("path");
 		string bloburl := model.getString("url");
 		commit[bloburl] := path;
-		createRestAPIQuery("GET", bloburl, new any).execute(updateABModelFromResponse);
+		builder.createRestAPIQuery("GET", bloburl, new any).execute(updateABModelFromResponse);
 	}
 }
 
@@ -243,17 +420,11 @@ event GitHandler
 	HttpTransport http;
 	sequence<optional<string>> latestHash;
 
-	action updateEPLFile(string name, string contents, string description, string state)
+	action updateEPLFile(string id, string name, string contents, string description, string state)
 	{
 		GitUpdate update := GitUpdate.create(repo, auth, branch, http, latestHash);
-		any _ := Functional({
-			"epl/"+name+".mon":contents,
-			"epl/"+name+".state": state,
-			"epl/"+name+".txt": description
-		})
-			.map(update.writeFile)
-			.map(update.getWriteResponse);
-			//.waitForAllCompleted("com.softwareag.connectivity.httpclient.Response", "id", update.doCommit);
+		EPLFile eplFile := EPLFile.createFromC8Y(update, id, name, description, state, contents);
+		eplFile.updateFromGit(Fn.partial(eplFile.checkForUpdate, eplFile.commitToGit).exec);
 	}
 
 	action updateABModel(string name, string model, string description, string state)
@@ -275,15 +446,15 @@ event GitHandler
 		on all ManagedObject(type="apama_eplfile") as a {
 			AnyExtractor ae := AnyExtractor(a.params);
 			if a.name != "App update logger" {
-				updateEPLFile(a.name, ae.getStringOr("apama_eplfile.contents", ""), ae.getStringOr("apama_eplfile.description", ""), ae.getStringOr("apama_eplfile.state", "")); 
+				updateEPLFile(a.id, a.name, ae.getStringOr("apama_eplfile.contents", ""), ae.getStringOr("apama_eplfile.description", ""), ae.getStringOr("apama_eplfile.state", "")); 
 			}
 		}
 		on all ManagedObject(type="c8y_PublicAnalyticsBuilderModel") as a {
-			AnyExtractor ae := AnyExtractor(a.params);			
+			AnyExtractor ae := AnyExtractor(a.params);
 			updateABModel(a.name, JSONPlugin.toJSON(a.params.getOr("builderModel", new dictionary<any, any>)), ae.getStringOr("description", ""), JSONPlugin.toJSON({"mode":ae.getStringOr("mode", ""), "modeProperties":ae.getStringOr("modeProperties", ""), "state":ae.getStringOr("state", "")}));
 		}
 		on all wait(10.0) {
-			GitUpdate.create(repo, auth, branch, http, latestHash).checkForCommits();			
+			GitUpdate.create(repo, auth, branch, http, latestHash).checkForCommits();
 		}
 		GitUpdate.create(repo, auth, branch, http, latestHash).checkForCommits();
 	}
@@ -293,6 +464,7 @@ event GitHandler
 monitor GitHandlerMonitor {
 	action onload() {
 		monitor.subscribe(FindTenantOptionsResponse.SUBSCRIBE_CHANNEL);
+		monitor.subscribe(FindManagedObjectResponse.SUBSCRIBE_CHANNEL);
 		on FindTenantOptionsResponse(reqId=(<FindTenantOptions>Fn.sendToChannel(FindTenantOptions.SEND_CHANNEL, Fn.setFields(new FindTenantOptions, {"reqId":Util.generateReqId(), "category":"github"}))).reqId) as options {
 			TenantOption opt;
 			string owner:="";
