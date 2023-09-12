@@ -24,9 +24,24 @@ event HTTPPromiseHelper
 		log "Create HTTP promise helper";
 		HTTPPromiseHelper helper := new HTTPPromiseHelper;
 		helper.fn := __Util.getGenericAction(fn);
+		helper.bodyfn := __Util.getGenericAction(Fn.partial(constantFn, [new any]));
 		helper.transport := transport;
 		helper.base := base;
 		helper.auth := auth;
+		helper.method := "GET";
+		return helper.exec;
+	}
+	static action constantFn(any const, any _) returns any { return const; }
+	static action createWrite(HttpTransport transport, string base, string auth, string method, string path, any bodyfn) returns action<any> returns any
+	{
+		log "Create HTTP promise helper";
+		HTTPPromiseHelper helper := new HTTPPromiseHelper;
+		helper.fn := __Util.getGenericAction(Fn.partial(constantFn, path));
+		helper.bodyfn := __Util.getGenericAction(bodyfn);
+		helper.transport := transport;
+		helper.base := base;
+		helper.auth := auth;
+		helper.method := "POST";
 		return helper.exec;
 	}
 	action exec(any a) returns any
@@ -37,7 +52,7 @@ event HTTPPromiseHelper
 			string nextPath := <string> fn([a]);
 			nextPath := nextPath.replaceAll(base, "");
 			log "Create an HTTP request for "+nextPath;
-			transport.createAndExecuteRequest("GET", nextPath, new any, <HttpOptions>Fn.setFields(new HttpOptions, {"headers":{"Accept":"application/vnd.github+json", "Authorization":auth}}), respond);
+			transport.createAndExecuteRequest(method, nextPath, bodyfn([a]), <HttpOptions>Fn.setFields(new HttpOptions, {"headers":{"Accept":"application/vnd.github+json", "Authorization":auth}}), respond);
 		} catch (Exception e) {
 			log "Got exception in HTTP promise helper "+e.toString();
 			exceptPromise(e);
@@ -55,11 +70,14 @@ event HTTPPromiseHelper
 		resolvePromise(r.payload.data);
 	}
 	action<sequence<any>> returns any fn;
+	action<sequence<any>> returns any bodyfn;
 	action<any> resolvePromise;
 	action<Exception> exceptPromise;
 	HttpTransport transport;
 	string base;
 	string auth;
+	string method;
+	any payload;
 }
 
 event FileFilter
@@ -121,6 +139,37 @@ event GithubPromiseHelper
 			andThen(HTTPPromiseHelper.create(transport, base, auth, getEntry("url"))).
 			andThen(base64Decode);
 	}
+	static action writeFileInGit(HttpTransport transport, string base, string auth, string contents) returns Promise
+	{
+		return Promise.resolve({"content":contents, "encoding":"utf-8"}).
+			andThen(HTTPPromiseHelper.createWrite(transport, base, auth, "POST", "/git/blobs", Fn.__identity));
+	}
+	static action createCommit(any result) returns any
+	{
+		log "createCommit "+result.valueToString();
+		sequence<any> r := <sequence<any>> result;
+		return {"message":<any>"Update C8Y", "parents":[AnyExtractor(r[1]).getString("sha")], "tree":AnyExtractor(r[0]).getString("sha"), "author":{"name":"EPL Apps", "email":"automatic.eplapps@streaminganalytics.c8y"}};
+	}
+	static action createHead(any result) returns any
+	{
+		log "createHead "+result.valueToString();
+		return {"sha":AnyExtractor(result).getString("sha"), "force":true};
+	}
+	static action createTree(any result) returns any
+	{
+		log "createTree "+result.valueToString();
+		return {"tree": result};
+	}
+	static action updateTree(HttpTransport transport, string base, string auth, string branch, Promise newtree) returns Promise
+	{
+		return PromiseJoiner.joinAll([
+		    newtree.andThen(HTTPPromiseHelper.createWrite(transport, base, auth, "POST", "/git/trees", createTree)),
+		    getHead(transport, base, auth, branch)
+		    	.andThen(HTTPPromiseHelper.create(transport, base, auth, getEntry("object.url")))
+		]).
+			andThen(HTTPPromiseHelper.createWrite(transport, base, auth, "POST", "/git/commits", createCommit)).
+			andThen(HTTPPromiseHelper.createWrite(transport, base, auth, "PATCH", "/git/refs/heads/"+branch, createHead));
+	}
 	static action base64Decode(any a) returns any
 	{
 		log "base64Decode("+a.valueToString()+")";
@@ -161,34 +210,87 @@ event EPLFileSyncer
 			                       GithubPromiseHelper.getCurrentTree(transport, base, auth, branch))
 				.andThen(readGitFileContents)
 				.andThen(updateGitFileContents)
-				.andThen(tryCommitToGit);
+				.andThen(tryCommitToGit)
+				.andThen(completeGitCommit)
+				.andThen(logAny);
 		}
+	}
+	action pathNotInCommits(any treeentry) returns boolean
+	{
+		return -1 = commitPaths.indexOf(AnyExtractor(treeentry).getStringOr("path", ""));
+	}
+	action updateTree(any tree) returns any
+	{
+		log JSONPlugin.toJSON(AnyExtractor(tree).getAny("tree"));
+		sequence<any> filteredTree := <sequence<any>> Functional(AnyExtractor(tree).getAny("tree"))
+			.filter(Fn.isNot(Fn.partial(Fn.fieldEqual, ["type", "tree"])))
+			.filter(pathNotInCommits).get();
+		integer i := 0;
+		while i < commitPaths.size() {
+			filteredTree.append({
+				"path":commitPaths[i],
+				"mode":"100644",
+				"type":"blob",
+				"sha":commitHashes[i]
+			});
+			i := i + 1;
+		}
+		return filteredTree;
+	}
+	action completeGitCommit(any commit) returns any
+	{
+		log "completeGitCommit "+commit.valueToString();
+		try {
+			commitHashes := <sequence<string>> Functional(commit)
+				.map(AnyExtractor.create)
+				.map(Fn.callAction("getString", "sha"))
+				.map(Fn.toType("string"))
+				.get();
+			
+			return GithubPromiseHelper.updateTree(transport, base, auth, branch, GithubPromiseHelper.getCurrentTree(transport, base, auth, branch)
+				.andThen(updateTree));
+		} catch (Exception e) {
+			log e.toString();
+		}
+		return new any;
 	}
 	action tryCommitToGit(any _) returns any
 	{
+		sequence<Promise> promises := new sequence<Promise>;
 		if eplAppsState != gitState then {
 			log "Updating file state in git" at INFO;
+			commitPaths.append("epl/"+name+".state");
+			promises.append(GithubPromiseHelper.writeFileInGit(transport, base, auth, eplAppsState));
 		} else {
 			log "File state already identical in git" at INFO;
 		}
 		if eplAppsDescription != gitDescription then {
 			log "Updating file description in git" at INFO;
+			commitPaths.append("epl/"+name+".txt");
+			promises.append(GithubPromiseHelper.writeFileInGit(transport, base, auth, eplAppsDescription));
 		} else {
 			log "File description already identical in git" at INFO;
 		}
 		if eplAppsContent != gitContent then {
 			log "Updating file content in git" at INFO;
+			commitPaths.append("epl/"+name+".mon");
+			promises.append(GithubPromiseHelper.writeFileInGit(transport, base, auth, eplAppsContent));
 		} else {
 			log "File content already identical in git" at INFO;
 		}
-		return new any;
+		return PromiseJoiner.joinAll(promises);
 	}
 	action updateGitFileContents(any gitcontents) returns any
 	{
-		sequence<string> stringcontents := <sequence<string>> gitcontents;
-		gitDescription := stringcontents[0];
-		gitState := stringcontents[1];
-		gitContent := stringcontents[2];
+		log "Update git file contents "+gitcontents.valueToString();
+		try {
+			sequence<any> stringcontents := <sequence<any>> gitcontents;
+			gitDescription := <string> stringcontents[0];
+			gitState := <string> stringcontents[1];
+			gitContent := <string> stringcontents[2];
+		} catch (Exception e) {
+			log e.toString();
+		}
 		return new any;
 	}
 	action readGitFileContents(any gitfiles) returns any
@@ -218,6 +320,8 @@ event EPLFileSyncer
 	string gitContent;
 	string gitState;
 	string gitDescription;
+	sequence<string> commitPaths;
+	sequence<string> commitHashes;
 }
 
 event GitHandler
