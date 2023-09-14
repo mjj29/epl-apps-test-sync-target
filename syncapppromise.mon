@@ -521,6 +521,9 @@ event GitHandler
 		on all ManagedObject(type="c8y_PublicAnalyticsBuilderModel") as a {
 			// Do something
 		}
+		on all ManagedObject(type="c8y_TemplateInstance") as a {
+			// Do something
+		}
 		on all ManagedObjectDeleted() { /** TODO */ }
 		on all wait(10.0) {
 			GithubPromiseHelper.getHead(http, repo, auth, branch).
