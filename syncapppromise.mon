@@ -12,8 +12,11 @@ using com.apama.functional.__Util;
 using com.apama.cumulocity.SerialConnection;
 using com.apama.cumulocity.FindTenantOptions;
 using com.apama.cumulocity.FindTenantOptionsResponse;
+using com.apama.cumulocity.GenericRequest;
+using com.apama.cumulocity.GenericResponse;
 using com.apama.cumulocity.TenantOption;
 using com.apama.cumulocity.ManagedObject;
+using com.apama.cumulocity.ManagedObjectDeleted;
 using com.apama.cumulocity.Util;
 using com.apama.json.JSONPlugin;
 
@@ -95,15 +98,104 @@ event FileFilter
 	{
 		dictionary<string, string> files := new dictionary<string, string>;
 		try {
-		Functional(AnyExtractor(tree).getAny("tree"))
-			.map(AnyExtractor.create)
-			.filter(Fn.partial(pathMatches, filter))
-			.map(Fn.partial(entryToFileURL, files));
+			Functional(AnyExtractor(tree).getAny("tree"))
+				.map(AnyExtractor.create)
+				.filter(Fn.partial(pathMatches, filter))
+				.map(Fn.partial(entryToFileURL, files));
 		} catch (Exception e) {
 			log e.toString();
 		}
 		return files;
 	}
+}
+
+event EPLFilesPromiseHelper
+{
+	static action getEPLFile(SerialConnection connection, string name) returns Promise
+	{
+		log "getEPLFile: "+name;
+		EPLFilesPromiseHelper helper := new EPLFilesPromiseHelper;
+		helper.name := name;
+		helper.connection := connection;
+		Promise promise := Promise.create(helper.setupPromise);
+		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		integer id := Util.generateReqId();
+		on GenericResponse(reqId=id) as r {
+			log "GenericResponse: "+r.toString();
+			helper.resolvePromise(r.getBody());
+			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		}
+		send Fn.setFields(new GenericRequest, {"path": "/service/cep/eplfiles", "reqId":id, "method":"GET"}) to connection.getChannel(GenericRequest.SEND_CHANNEL);
+		return promise.andThen(helper.readFile);
+	}
+	static action createEPLFile(SerialConnection connection, string name, string state, string description, string content) returns Promise
+	{
+		return updateEPLFileImpl(connection, "POST", "/service/cep/eplfiles", {
+			"name":name,
+			"eplPackageName": "eplfiles."+name,
+			"contents": content,
+			"state": state,
+			"description": description
+		});
+	}
+	static action updateEPLFile(SerialConnection connection, string id, string name, string state, string description, string content) returns Promise
+	{
+		return updateEPLFileImpl(connection, "PUT", "/service/cep/eplfiles/"+id, {
+			"id": id,
+			"name": name,
+			"eplPackageName": "eplfiles."+name,
+			"contents": content,
+			"state": state,
+			"description": description
+		});
+	}
+	static action updateEPLFileImpl(SerialConnection connection, string method, string url, any body) returns Promise
+	{
+		EPLFilesPromiseHelper helper := new EPLFilesPromiseHelper;
+		helper.connection := connection;
+		Promise promise := Promise.create(helper.setupPromise);
+		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		integer id := Util.generateReqId();
+		on GenericResponse(reqId=id) as r {
+			log "GenericResponse: "+r.toString();
+			helper.resolvePromise(r.getBody());
+			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		}
+		send Fn.setFields(new GenericRequest, {"path": url, "reqId":id, "method":method, "body":body}) to connection.getChannel(GenericRequest.SEND_CHANNEL);
+		return promise;
+	}
+	action readFile(any a) returns any
+	{
+		log "readFile: "+a.valueToString();
+		AnyExtractor ae := AnyExtractor(AnyExtractor(
+		                Functional(AnyExtractor(a).getAny("eplfiles"))
+		                .filter(Fn.partial(Fn.fieldEqual, ["name", name]))
+		                .get())
+		                .getAnyOr("0", new any));
+		if ae.data.empty() {
+			return ae.data;
+		}
+		Promise promise := Promise.create(setupPromise);
+		log ae.toString();
+		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		integer id := Util.generateReqId();
+		on GenericResponse(reqId=id) as r {
+			log "GenericResponse: "+r.toString();
+			resolvePromise(r.getBody());
+			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		}
+		send Fn.setFields(new GenericRequest, {"path": "/service/cep/eplfiles/"+ae.getString("id"), "reqId":id, "method":"GET"}) to connection.getChannel(GenericRequest.SEND_CHANNEL);
+		return promise;
+	}
+	action setupPromise(action<any> resolve, action<Exception> error)
+	{
+		resolvePromise := resolve;
+		exceptPromise := error;
+	}
+	action<any> resolvePromise;
+	action<Exception> exceptPromise;
+	string name;
+	SerialConnection connection;
 }
 
 event GithubPromiseHelper
@@ -174,13 +266,13 @@ event GithubPromiseHelper
 	{
 		log "base64Decode("+a.valueToString()+")";
 		try {
-			string content := Base64Plugin.decode(AnyExtractor(a).getString("content"));
+			string content := Base64Plugin.decode(AnyExtractor(a).getString("content").rtrim());
 			log "Decoded "+content.length().toString()+" bytes";
 			return content;
 		} catch (Exception e) {
 			log e.toString();
 		}
-		return new any;
+		return "";
 	}
 }
 
@@ -191,6 +283,7 @@ event EPLFileSyncer
 		AnyExtractor ae := AnyExtractor(a.params);
 		return <EPLFileSyncer> Fn.setFields(new EPLFileSyncer, 
 			{"transport": http, "branch":branch, "base":base, "auth":auth, "name":a.name,
+			 "eplAppsId":a.id,
 			 "eplAppsContent":ae.getStringOr("apama_eplfile.contents", ""),
 			 "eplAppsState":ae.getStringOr("apama_eplfile.state", ""),
 			 "eplAppsDescription":ae.getStringOr("apama_eplfile.description", "")
@@ -202,18 +295,65 @@ event EPLFileSyncer
 		log a.toString();
 		return a;
 	}
-	action synchronize()
+	action readEPLContents(any a) returns any
+	{
+		log "readEPLContents "+a.valueToString();
+		try {
+			AnyExtractor ae := AnyExtractor(a);
+			eplAppsContent := ae.getStringOr("contents", "");
+			eplAppsState := ae.getStringOr("state", "");
+			eplAppsDescription := ae.getStringOr("description", "");
+			eplAppsId := ae.getStringOr("id", "");
+		} catch (Exception e) {
+			log e.toString();
+		}
+		return new any;
+	}
+	action getEPLContents(any _) returns any
+	{
+		log "getEPLContents";
+		try {
+			return EPLFilesPromiseHelper.getEPLFile(connection, name)
+				.andThen(readEPLContents);
+		} catch (Exception e) {
+			log e.toString();
+		}
+		return new any;
+	}
+	action tryUpdateEPLApps(any _) returns any
+	{
+		if eplAppsState != gitState
+		or eplAppsDescription != gitDescription
+		or eplAppsContent != gitContent {
+			log "Updating EPL app "+name+" in C8Y";
+			if eplAppsId = "" {
+				return EPLFilesPromiseHelper.createEPLFile(connection, name, gitState, gitDescription, gitContent);
+			} else {
+				return EPLFilesPromiseHelper.updateEPLFile(connection, eplAppsId, name, gitState, gitDescription, gitContent);
+			}
+		}
+		return new any;
+	}
+	action synchronize() returns Promise
 	{
 		if eplAppsState != "" {
 			// sync EPL to github
-			GithubPromiseHelper.getEPLFilesFromTree(transport, base, auth, name, 
+			return GithubPromiseHelper.getEPLFilesFromTree(transport, base, auth, name, 
 			                       GithubPromiseHelper.getCurrentTree(transport, base, auth, branch))
 				.andThen(readGitFileContents)
 				.andThen(updateGitFileContents)
 				.andThen(tryCommitToGit)
 				.andThen(completeGitCommit)
 				.andThen(logAny);
+		} else if gitContentURL != "" {
+			// sync github to EPL
+			(<Promise>readGitFileContents([gitDescriptionURL, gitStateURL, gitContentURL]))
+				.andThen(updateGitFileContents)
+				.andThen(getEPLContents)
+				.andThen(tryUpdateEPLApps)
+				.andThen(logAny);
 		}
+		return new Promise;
 	}
 	action pathNotInCommits(any treeentry) returns boolean
 	{
@@ -298,12 +438,11 @@ event EPLFileSyncer
 		log gitfiles.valueToString();
 		try {
 			dictionary<string,apama.analyticsbuilder.Promise> dummy;
-			any r := PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(
+			return PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(
 			            Functional(gitfiles)
-			            	.map(Fn.partial(GithubPromiseHelper.getFileContents, [transport, base]))
+			            	.map(Fn.partial(GithubPromiseHelper.getFileContents, [transport, base, auth]))
 			            	.get().getEntries()
 			            , Fn.toType("apama.analyticsbuilder.Promise")));	
-			return r;
 		} catch (Exception e) {
 			log e.toString();
 		}
@@ -314,14 +453,19 @@ event EPLFileSyncer
 	string branch;
 	string name;
 	string auth;
+	string eplAppsId;
 	string eplAppsContent;
 	string eplAppsState;
 	string eplAppsDescription;
 	string gitContent;
 	string gitState;
 	string gitDescription;
+	string gitContentURL;
+	string gitStateURL;
+	string gitDescriptionURL;
 	sequence<string> commitPaths;
 	sequence<string> commitHashes;
+	SerialConnection connection;
 }
 
 event GitHandler
@@ -333,8 +477,7 @@ event GitHandler
 			"repo":"https://api.github.com/repos/"+owner+"/"+repo,
 			"auth":"Bearer "+PAT,
 			"branch":branch,
-			"http":HttpTransport.getOrCreateWithConfigurations("api.github.com", 443, {HttpTransport.CONFIG_TLS: "true", HttpTransport.CONFIG_BASE_PATH: "/repos/"+owner+"/"+repo}),
-			"latestHash":[new optional<string>]
+			"http":HttpTransport.getOrCreateWithConfigurations("api.github.com", 443, {HttpTransport.CONFIG_TLS: "true", HttpTransport.CONFIG_BASE_PATH: "/repos/"+owner+"/"+repo})
 			});
 	}
 	SerialConnection connection;
@@ -342,8 +485,52 @@ event GitHandler
 	string auth;
 	string branch;
 	HttpTransport http;
-	sequence<optional<string>> latestHash;
+	string latestHash;
 	
+	action createEPLFileSyncer(dictionary<string, EPLFileSyncer> syncs, any treeentry)
+	{
+		AnyExtractor ae := AnyExtractor(treeentry);
+		string path := ae.getString("path");
+		string url := ae.getString("url");
+		if path.startsWith("epl/") {
+			string name := path.replace("epl/(.*)\\.[^.]*", "$1");
+			string type := path.replace("epl/.*\\.([^.]*)", "$1");
+			EPLFileSyncer syncer := syncs.getOr(name, new EPLFileSyncer);
+			syncer.connection := connection;
+			syncer.name := name;
+			syncer.transport := http;
+			syncer.base := repo;
+			syncer.branch := branch;
+			syncer.auth := auth;
+			if type = "mon" {
+				syncer.gitContentURL := url;
+			} else if type = "txt" {
+				syncer.gitDescriptionURL := url;
+			} else if type = "state" {
+				syncer.gitStateURL := url;
+			}
+			syncs.add(name, syncer);
+		}
+	}
+	action updateGitFilesToEPLApps(any tree) returns any
+	{
+		dictionary<string, EPLFileSyncer> syncs := new dictionary<string, EPLFileSyncer>;
+		Fn.map(AnyExtractor(tree).getAny("tree"), Fn.partial(createEPLFileSyncer, syncs));
+		return PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(syncs.values(), Fn.callAction("synchronize", new any)));
+	}
+	action checkLatestHash(any head) returns any
+	{
+		log "checkLatestHash("+head.valueToString()+")="+latestHash.toString();
+		string newHash := AnyExtractor(head).getString("object.sha");
+		if latestHash != newHash {
+			log "Checking new commit "+newHash+" for changes to EPL Apps";
+			latestHash := newHash;
+			GithubPromiseHelper.getCurrentTree(http, repo, auth, branch)
+				.andThen(updateGitFilesToEPLApps);
+				// todo also AB models
+		}
+		return new any;
+	}
 	action startHandler()
 	{
 		monitor.subscribe(ManagedObject.SUBSCRIBE_CHANNEL);
@@ -355,8 +542,10 @@ event GitHandler
 		on all ManagedObject(type="c8y_PublicAnalyticsBuilderModel") as a {
 			// Do something
 		}
+		on all ManagedObjectDeleted() { /** TODO */ }
 		on all wait(10.0) {
-			// Do something
+			GithubPromiseHelper.getHead(http, repo, auth, branch).
+				andThen(checkLatestHash);
 		}
 	}
 }
@@ -395,12 +584,5 @@ monitor GitHandlerMonitor {
 				log "Not monitoring for github changes as the options are not configured" at INFO;
 			}
 		}
-/*		
-		HttpTransport transport := HttpTransport.getOrCreateWithConfigurations("intra.apama.com", 80, {HttpTransport.CONFIG_BASE_PATH:ROOT});
-		Promise.resolve({"next":"start.json"})
-			.andThen(HTTPPromiseHelper.create(transport, Fn.getEntry("next")))
-			.andThen(HTTPPromiseHelper.create(transport, Fn.getEntry("next")))
-			.andThen(HTTPPromiseHelper.create(transport, Fn.getEntry("next")))
-			.andThen(parseData);*/
 	}
 }
