@@ -506,7 +506,9 @@ event GitHandler
 			latestHash := newHash;
 			GithubPromiseHelper.getCurrentTree(http, repo, auth, branch)
 				.andThen(updateGitFilesToEPLApps);
-				// todo also AB models
+				// TODO also AB models
+				// TODO also template instances
+				// TODO also deletions
 		}
 		return new any;
 	}
@@ -519,10 +521,10 @@ event GitHandler
 			EPLFileSyncer.createFromManagedObject(http, repo, auth, branch, a).synchronize();
 		}
 		on all ManagedObject(type="c8y_PublicAnalyticsBuilderModel") as a {
-			// Do something
+			// TODO
 		}
 		on all ManagedObject(type="c8y_TemplateInstance") as a {
-			// Do something
+			// TODO
 		}
 		on all ManagedObjectDeleted() { /** TODO */ }
 		on all wait(10.0) {
