@@ -24,7 +24,6 @@ event HTTPPromiseHelper
 {
 	static action create(HttpTransport transport, string base, string auth, any fn) returns action<any> returns any
 	{
-		log "Create HTTP promise helper";
 		HTTPPromiseHelper helper := new HTTPPromiseHelper;
 		helper.fn := __Util.getGenericAction(fn);
 		helper.bodyfn := __Util.getGenericAction(Fn.partial(constantFn, [new any]));
@@ -37,7 +36,6 @@ event HTTPPromiseHelper
 	static action constantFn(any const, any _) returns any { return const; }
 	static action createWrite(HttpTransport transport, string base, string auth, string method, string path, any bodyfn) returns action<any> returns any
 	{
-		log "Create HTTP promise helper";
 		HTTPPromiseHelper helper := new HTTPPromiseHelper;
 		helper.fn := __Util.getGenericAction(Fn.partial(constantFn, path));
 		helper.bodyfn := __Util.getGenericAction(bodyfn);
@@ -49,15 +47,13 @@ event HTTPPromiseHelper
 	}
 	action exec(any a) returns any
 	{
-		log "HTTP promise helper invoked";
 		Promise promise := Promise.create(setupPromise);
 		try {
 			string nextPath := <string> fn([a]);
 			nextPath := nextPath.replaceAll(base, "");
-			log "Create an HTTP request for "+nextPath;
 			transport.createAndExecuteRequest(method, nextPath, bodyfn([a]), <HttpOptions>Fn.setFields(new HttpOptions, {"headers":{"Accept":"application/vnd.github+json", "Authorization":auth}}), respond);
 		} catch (Exception e) {
-			log "Got exception in HTTP promise helper "+e.toString();
+			log "Got exception in HTTP promise helper "+e.toString() at WARN;
 			exceptPromise(e);
 		}
 		return promise;
@@ -69,7 +65,6 @@ event HTTPPromiseHelper
 	}
 	action respond(Response r)
 	{
-		log "Got HTTP response: "+r.payload.data.valueToString();
 		resolvePromise(r.payload.data);
 	}
 	action<sequence<any>> returns any fn;
@@ -103,7 +98,7 @@ event FileFilter
 				.filter(Fn.partial(pathMatches, filter))
 				.map(Fn.partial(entryToFileURL, files));
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return files;
 	}
@@ -113,7 +108,6 @@ event EPLFilesPromiseHelper
 {
 	static action getEPLFile(SerialConnection connection, string name) returns Promise
 	{
-		log "getEPLFile: "+name;
 		EPLFilesPromiseHelper helper := new EPLFilesPromiseHelper;
 		helper.name := name;
 		helper.connection := connection;
@@ -121,7 +115,6 @@ event EPLFilesPromiseHelper
 		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
 		integer id := Util.generateReqId();
 		on GenericResponse(reqId=id) as r {
-			log "GenericResponse: "+r.toString();
 			helper.resolvePromise(r.getBody());
 			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
 		}
@@ -157,7 +150,6 @@ event EPLFilesPromiseHelper
 		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
 		integer id := Util.generateReqId();
 		on GenericResponse(reqId=id) as r {
-			log "GenericResponse: "+r.toString();
 			helper.resolvePromise(r.getBody());
 			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
 		}
@@ -166,7 +158,6 @@ event EPLFilesPromiseHelper
 	}
 	action readFile(any a) returns any
 	{
-		log "readFile: "+a.valueToString();
 		AnyExtractor ae := AnyExtractor(AnyExtractor(
 		                Functional(AnyExtractor(a).getAny("eplfiles"))
 		                .filter(Fn.partial(Fn.fieldEqual, ["name", name]))
@@ -176,11 +167,9 @@ event EPLFilesPromiseHelper
 			return ae.data;
 		}
 		Promise promise := Promise.create(setupPromise);
-		log ae.toString();
 		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
 		integer id := Util.generateReqId();
 		on GenericResponse(reqId=id) as r {
-			log "GenericResponse: "+r.toString();
 			resolvePromise(r.getBody());
 			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
 		}
@@ -238,18 +227,15 @@ event GithubPromiseHelper
 	}
 	static action createCommit(any result) returns any
 	{
-		log "createCommit "+result.valueToString();
 		sequence<any> r := <sequence<any>> result;
 		return {"message":<any>"Update C8Y", "parents":[AnyExtractor(r[1]).getString("sha")], "tree":AnyExtractor(r[0]).getString("sha"), "author":{"name":"EPL Apps", "email":"automatic.eplapps@streaminganalytics.c8y"}};
 	}
 	static action createHead(any result) returns any
 	{
-		log "createHead "+result.valueToString();
 		return {"sha":AnyExtractor(result).getString("sha"), "force":true};
 	}
 	static action createTree(any result) returns any
 	{
-		log "createTree "+result.valueToString();
 		return {"tree": result};
 	}
 	static action updateTree(HttpTransport transport, string base, string auth, string branch, Promise newtree) returns Promise
@@ -264,13 +250,11 @@ event GithubPromiseHelper
 	}
 	static action base64Decode(any a) returns any
 	{
-		log "base64Decode("+a.valueToString()+")";
 		try {
 			string content := Base64Plugin.decode(AnyExtractor(a).getString("content").rtrim());
-			log "Decoded "+content.length().toString()+" bytes";
 			return content;
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return "";
 	}
@@ -297,7 +281,6 @@ event EPLFileSyncer
 	}
 	action readEPLContents(any a) returns any
 	{
-		log "readEPLContents "+a.valueToString();
 		try {
 			AnyExtractor ae := AnyExtractor(a);
 			eplAppsContent := ae.getStringOr("contents", "");
@@ -305,18 +288,17 @@ event EPLFileSyncer
 			eplAppsDescription := ae.getStringOr("description", "");
 			eplAppsId := ae.getStringOr("id", "");
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return new any;
 	}
 	action getEPLContents(any _) returns any
 	{
-		log "getEPLContents";
 		try {
 			return EPLFilesPromiseHelper.getEPLFile(connection, name)
 				.andThen(readEPLContents);
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return new any;
 	}
@@ -343,15 +325,13 @@ event EPLFileSyncer
 				.andThen(readGitFileContents)
 				.andThen(updateGitFileContents)
 				.andThen(tryCommitToGit)
-				.andThen(completeGitCommit)
-				.andThen(logAny);
+				.andThen(completeGitCommit);
 		} else if gitContentURL != "" {
 			// sync github to EPL
 			(<Promise>readGitFileContents([gitDescriptionURL, gitStateURL, gitContentURL]))
 				.andThen(updateGitFileContents)
 				.andThen(getEPLContents)
-				.andThen(tryUpdateEPLApps)
-				.andThen(logAny);
+				.andThen(tryUpdateEPLApps);
 		}
 		return new Promise;
 	}
@@ -361,7 +341,6 @@ event EPLFileSyncer
 	}
 	action updateTree(any tree) returns any
 	{
-		log JSONPlugin.toJSON(AnyExtractor(tree).getAny("tree"));
 		sequence<any> filteredTree := <sequence<any>> Functional(AnyExtractor(tree).getAny("tree"))
 			.filter(Fn.isNot(Fn.partial(Fn.fieldEqual, ["type", "tree"])))
 			.filter(pathNotInCommits).get();
@@ -379,7 +358,6 @@ event EPLFileSyncer
 	}
 	action completeGitCommit(any commit) returns any
 	{
-		log "completeGitCommit "+commit.valueToString();
 		try {
 			commitHashes := <sequence<string>> Functional(commit)
 				.map(AnyExtractor.create)
@@ -387,10 +365,14 @@ event EPLFileSyncer
 				.map(Fn.toType("string"))
 				.get();
 			
-			return GithubPromiseHelper.updateTree(transport, base, auth, branch, GithubPromiseHelper.getCurrentTree(transport, base, auth, branch)
-				.andThen(updateTree));
+			if commitHashes.size() = 0 {
+				return new any;
+			} else {
+				return GithubPromiseHelper.updateTree(transport, base, auth, branch, GithubPromiseHelper.getCurrentTree(transport, base, auth, branch)
+					.andThen(updateTree));
+			}
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return new any;
 	}
@@ -398,44 +380,42 @@ event EPLFileSyncer
 	{
 		sequence<Promise> promises := new sequence<Promise>;
 		if eplAppsState != gitState then {
-			log "Updating file state in git" at INFO;
+			log "Updating file state in git for "+name at INFO;
 			commitPaths.append("epl/"+name+".state");
 			promises.append(GithubPromiseHelper.writeFileInGit(transport, base, auth, eplAppsState));
 		} else {
-			log "File state already identical in git" at INFO;
+			log "File state already identical in git for "+name at DEBUG;
 		}
 		if eplAppsDescription != gitDescription then {
-			log "Updating file description in git" at INFO;
+			log "Updating file description in git for "+name at INFO;
 			commitPaths.append("epl/"+name+".txt");
 			promises.append(GithubPromiseHelper.writeFileInGit(transport, base, auth, eplAppsDescription));
 		} else {
-			log "File description already identical in git" at INFO;
+			log "File description already identical in git for "+name at DEBUG;
 		}
 		if eplAppsContent != gitContent then {
-			log "Updating file content in git" at INFO;
+			log "Updating file content in git for "+name at INFO;
 			commitPaths.append("epl/"+name+".mon");
 			promises.append(GithubPromiseHelper.writeFileInGit(transport, base, auth, eplAppsContent));
 		} else {
-			log "File content already identical in git" at INFO;
+			log "File content already identical in git for "+name at DEBUG;
 		}
 		return PromiseJoiner.joinAll(promises);
 	}
 	action updateGitFileContents(any gitcontents) returns any
 	{
-		log "Update git file contents "+gitcontents.valueToString();
 		try {
 			sequence<any> stringcontents := <sequence<any>> gitcontents;
 			gitDescription := <string> stringcontents[0];
 			gitState := <string> stringcontents[1];
 			gitContent := <string> stringcontents[2];
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return new any;
 	}
 	action readGitFileContents(any gitfiles) returns any
 	{
-		log gitfiles.valueToString();
 		try {
 			dictionary<string,apama.analyticsbuilder.Promise> dummy;
 			return PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(
@@ -444,7 +424,7 @@ event EPLFileSyncer
 			            	.get().getEntries()
 			            , Fn.toType("apama.analyticsbuilder.Promise")));	
 		} catch (Exception e) {
-			log e.toString();
+			log e.toString() at WARN;
 		}
 		return new any;
 	}
@@ -520,10 +500,9 @@ event GitHandler
 	}
 	action checkLatestHash(any head) returns any
 	{
-		log "checkLatestHash("+head.valueToString()+")="+latestHash.toString();
 		string newHash := AnyExtractor(head).getString("object.sha");
 		if latestHash != newHash {
-			log "Checking new commit "+newHash+" for changes to EPL Apps";
+			log "Checking new commit "+newHash+" for changes to EPL Apps" at INFO;
 			latestHash := newHash;
 			GithubPromiseHelper.getCurrentTree(http, repo, auth, branch)
 				.andThen(updateGitFilesToEPLApps);
@@ -534,9 +513,9 @@ event GitHandler
 	action startHandler()
 	{
 		monitor.subscribe(ManagedObject.SUBSCRIBE_CHANNEL);
-		log "Synchronizing EPL Apps with "+repo+" branch "+branch;
+		log "Synchronizing EPL Apps with "+repo+" branch "+branch at INFO;
 		on all ManagedObject(type="apama_eplfile") as a {
-			log "Got managed object "+a.toString();
+			log "EPL Apps updated EPL File "+a.name at INFO;
 			EPLFileSyncer.createFromManagedObject(http, repo, auth, branch, a).synchronize();
 		}
 		on all ManagedObject(type="c8y_PublicAnalyticsBuilderModel") as a {
@@ -553,18 +532,12 @@ event GitHandler
 monitor GitHandlerMonitor {
 	constant string ROOT := "/~matj/gittest/";
 
-	action parseData(any a) returns any
-	{
-		log "Got data "+a.toString();
-		return new any;
-	}
 	action onload()
 	{
 		SerialConnection connection := SerialConnection.create();
 		monitor.subscribe(connection.getChannel(FindTenantOptionsResponse.SUBSCRIBE_CHANNEL));
 		
 		on FindTenantOptionsResponse(reqId=(<FindTenantOptions>Fn.sendToChannel(connection.getChannel(FindTenantOptions.SEND_CHANNEL), Fn.setFields(new FindTenantOptions, {"reqId":Util.generateReqId(), "category":"github"}))).reqId) as options {
-			log "Got option "+options.toString();
 			TenantOption opt;
 			string owner:="";
 			string repository:="";
