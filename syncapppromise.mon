@@ -121,6 +121,20 @@ event EPLFilesPromiseHelper
 		send Fn.setFields(new GenericRequest, {"path": "/service/cep/eplfiles", "reqId":id, "method":"GET"}) to connection.getChannel(GenericRequest.SEND_CHANNEL);
 		return promise;
 	}
+	static action deleteEPLFile(SerialConnection connection, string id) returns Promise
+	{
+		EPLFilesPromiseHelper helper := new EPLFilesPromiseHelper;
+		helper.connection := connection;
+		Promise promise := Promise.create(helper.setupPromise);
+		monitor.subscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		integer reqId := Util.generateReqId();
+		on GenericResponse(reqId=reqId) as r {
+			helper.resolvePromise(r.getBody());
+			monitor.unsubscribe(connection.getChannel(GenericResponse.SUBSCRIBE_CHANNEL));
+		}
+		send Fn.setFields(new GenericRequest, {"path": "/service/cep/eplfiles/"+id, "reqId":reqId, "method":"DELETE"}) to connection.getChannel(GenericRequest.SEND_CHANNEL);
+		return promise;
+	}
 	static action getEPLFile(SerialConnection connection, string name) returns Promise
 	{
 		EPLFilesPromiseHelper helper := new EPLFilesPromiseHelper;
@@ -562,17 +576,46 @@ event GitHandler
 		Fn.map(AnyExtractor(tree).getAny("tree"), Fn.partial(createEPLFileSyncer, syncs));
 		return PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(syncs.values(), Fn.callAction("synchronize", new any)));
 	}
+	action removeIfValue(dictionary<string, string> apps, string name)
+	{
+		string id;
+		for id in apps.keys() {
+			if apps[id] = name {
+				apps.remove(id);
+			}
+		}
+	}
+	action deleteEPLApp(string id, string name) returns Promise
+	{
+		return EPLFilesPromiseHelper.deleteEPLFile(connection, id);
+	}
+	action checkForDeletions(any tree) returns any
+	{
+		try {
+			dictionary<string, string> apps := existingEplApps.clone();
+			Functional(AnyExtractor(tree).getAny("tree"))
+				.map(AnyExtractor.create)
+				.filter(Fn.partial(FileFilter.pathMatches, "^epl/.*.mon"))
+				.map(Fn.callAction("getString", "path"))
+				.map(Fn.callAction("replace", ["epl/(.*).mon", "$1"]))
+				.map(Fn.partial(removeIfValue, apps));
+			return PromiseJoiner.joinAll((<dictionary<string, Promise>> Fn.map(apps, deleteEPLApp)).values());
+		} catch (Exception e) {
+			log e.toString() at WARN;
+		}
+		return new any;
+	}
 	action checkLatestHash(any head) returns any
 	{
 		string newHash := AnyExtractor(head).getString("object.sha");
 		if latestHash != newHash {
 			log "Checking new commit "+newHash+" for changes to EPL Apps" at INFO;
 			latestHash := newHash;
-			GithubPromiseHelper.getCurrentTree(http, repo, auth, branch)
-				.andThen(updateGitFilesToEPLApps);
+			Promise tree := GithubPromiseHelper.getCurrentTree(http, repo, auth, branch);
+			tree.andThen(checkForDeletions);
+			tree.andThen(updateGitFilesToEPLApps);
 				// TODO also AB models
 				// TODO also template instances
-				// TODO also deletions
 		}
 		return new any;
 	}
