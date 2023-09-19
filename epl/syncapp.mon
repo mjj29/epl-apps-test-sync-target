@@ -301,8 +301,8 @@ event GithubPromiseHelper
 			string content := Base64Plugin.decode(AnyExtractor(a).getString("content").rtrim());
 			return content;
 		} catch (Exception e) {
-			log "Exception decoding base64: "+e.getMessage() at WARN;
-			log e.getStackTrace().toString() at INFO;
+			log "Exception decoding base64: "+e.getMessage() at INFO;
+			log e.getStackTrace().toString() at DEBUG;
 		}
 		return "";
 	}
@@ -511,7 +511,7 @@ event EPLFileSyncer
 	}
 	action updateGitFileContents(any gitcontents) returns any
 	{
-		log "updateGitFileContents";
+		log "updateGitFileContents: "+JSONPlugin.toJSON(gitcontents);
 		try {
 			sequence<any> stringcontents := <sequence<any>> gitcontents;
 			if stringcontents.size() = 0 then { return new any; }
