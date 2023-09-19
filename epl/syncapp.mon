@@ -105,6 +105,7 @@ event FileFilter
 			log "Exception in file filter: "+e.getMessage() at WARN;
 			log e.getStackTrace().toString() at INFO;
 		}
+		log JSONPlugin.toJSON(files);
 		return files;
 	}
 }
@@ -526,7 +527,7 @@ event EPLFileSyncer
 	}
 	action readGitFileContents(any gitfiles) returns any
 	{
-		log "readGitFileContents";
+		log "readGitFileContents: "+JSONPlugin.toJSON(gitfiles);
 		try {
 			dictionary<string,apama.analyticsbuilder.Promise> dummy;
 			return PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(
