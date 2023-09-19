@@ -529,6 +529,17 @@ event EPLFileSyncer
 	SerialConnection connection;
 }
 
+event FailLogger
+{
+	string description;
+	action exec(Exception e) returns any
+	{
+		log "Got an error doing "+description+": "+e.getMessage() at ERROR;
+		log e.getStackTrace().toString() at WARN;
+		return new any;
+	}
+}
+
 event GitHandler
 {
 	static action create(SerialConnection connection, string owner, string repo, string PAT, string branch) returns GitHandler
@@ -587,6 +598,7 @@ event GitHandler
 	}
 	action deleteEPLApp(string id, string name) returns Promise
 	{
+		existingEplApps.remove(id);
 		return EPLFilesPromiseHelper.deleteEPLFile(connection, id);
 	}
 	action checkForDeletions(any tree) returns any
@@ -612,10 +624,12 @@ event GitHandler
 			log "Checking new commit "+newHash+" for changes to EPL Apps" at INFO;
 			latestHash := newHash;
 			Promise tree := GithubPromiseHelper.getCurrentTree(http, repo, auth, branch);
-			tree.andThen(checkForDeletions);
-			tree.andThen(updateGitFilesToEPLApps);
+			return PromiseJoiner.joinAll([
+				tree.andThen(checkForDeletions),
+				tree.andThen(updateGitFilesToEPLApps)
 				// TODO also AB models
 				// TODO also template instances
+			]);
 		}
 		return new any;
 	}
@@ -623,7 +637,8 @@ event GitHandler
 	{
 		EPLFilesPromiseHelper.getAllEPLFiles(connection)
 			.andThen(updateExistingEplApps)
-			.andThen(listenForNewChanges);
+			.andThen(listenForNewChanges)
+			.andCatch(FailLogger("Reading initial apps").exec);
 	}
 	action parseNameAndId(any app)
 	{
@@ -641,7 +656,9 @@ event GitHandler
 		on all ManagedObject(type="apama_eplfile") as a {
 			log "EPL Apps updated EPL File "+a.name at INFO;
 			existingEplApps.add(a.id, a.name);
-			EPLFileSyncer.createFromManagedObject(http, repo, auth, branch, a).synchronize();
+			EPLFileSyncer.createFromManagedObject(http, repo, auth, branch, a)
+				.synchronize()
+				.andCatch(FailLogger("synchronizing EPL App update to git").exec);
 		}
 		on all ManagedObject(type="c8y_PublicAnalyticsBuilderModel") as a {
 			// TODO
@@ -651,16 +668,21 @@ event GitHandler
 		}
 		on all ManagedObjectDeleted() as mod { 
 			if existingEplApps.hasKey(mod.id) {
-				log "Removing EPL App "+existingEplApps[mod.id]+" from git" at INFO;
-				EPLFileSyncer.create(connection, http, repo, auth, branch, existingEplApps[mod.id]).removeFromGit();
+				string id := existingEplApps[mod.id];
 				existingEplApps.remove(mod.id);
+				log "Removing EPL App "+id+" from git" at INFO;
+				EPLFileSyncer.create(connection, http, repo, auth, branch, id)
+					.removeFromGit()
+					.andCatch(FailLogger("removing EPL app from git").exec);
+				
 			}
 		}
 		on all wait(10.0) {
-			GithubPromiseHelper.getHead(http, repo, auth, branch).
-				andThen(checkLatestHash);
+			GithubPromiseHelper.getHead(http, repo, auth, branch)
+				.andThen(checkLatestHash)
+				.andCatch(FailLogger("synchronizing git commit to EPL apps").exec);
 		}
-		return new any;
+		return _;
 	}
 }
 
