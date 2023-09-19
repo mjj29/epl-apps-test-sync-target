@@ -391,13 +391,11 @@ event EPLFileSyncer
 			return GithubPromiseHelper.getEPLFilesFromTree(transport, base, auth, name, 
 			                       GithubPromiseHelper.getCurrentTree(transport, base, auth, branch))
 				.andThen(readGitFileContents)
-				.andThen(updateGitFileContents)
 				.andThen(tryCommitToGit)
 				.andThen(completeGitCommit);
 		} else if gitContentURL != "" {
 			// sync github to EPL
 			(<Promise>readGitFileContents([gitDescriptionURL, gitStateURL, gitContentURL]))
-				.andThen(updateGitFileContents)
 				.andThen(getEPLContents)
 				.andThen(tryUpdateEPLApps);
 		} else if name != "" {
@@ -406,7 +404,6 @@ event EPLFileSyncer
 			return GithubPromiseHelper.getEPLFilesFromTree(transport, base, auth, name, 
 			                       GithubPromiseHelper.getCurrentTree(transport, base, auth, branch))
 				.andThen(readGitFileContents)
-				.andThen(updateGitFileContents)
 				.andThen(getEPLContents)
 				.andThen(tryCommitToGit)
 				.andThen(completeGitCommit);
@@ -510,7 +507,7 @@ event EPLFileSyncer
 		}
 		return PromiseJoiner.joinAll(promises);
 	}
-	action updateGitFileContents(any gitcontents) returns any
+	action updateGitFileContentsaoeu(any gitcontents) returns any
 	{
 		log "updateGitFileContents: "+JSONPlugin.toJSON(gitcontents);
 		try {
@@ -525,16 +522,40 @@ event EPLFileSyncer
 		}
 		return new any;
 	}
+	action updateGitDescription(any description) returns any {
+		gitDescription := <string> description;
+		log "updateGitDescription("+gitDescription+")";
+		return new any;
+	}
+	action updateGitContent(any content) returns any {
+		gitContent := <string> content;
+		log "updateGitContent("+gitContent+")";
+		return new any;
+	}
+	action updateGitState(any state) returns any {
+		gitState := <string> state;
+		log "updateGitState("+gitState+")";
+		return new any;
+	}
 	action readGitFileContents(any gitfiles) returns any
 	{
 		log "readGitFileContents: "+JSONPlugin.toJSON(gitfiles);
 		try {
-			dictionary<string,apama.analyticsbuilder.Promise> dummy;
-			return PromiseJoiner.joinAll(<sequence<Promise>>Fn.map(
-			            Functional(gitfiles)
-			            	.map(Fn.partial(GithubPromiseHelper.getFileContents, [transport, base, auth]))
-			            	.get().getEntries()
-			            , Fn.toType("apama.analyticsbuilder.Promise")));	
+			sequence<Promise> promises := new sequence<Promise>;
+			any k;
+			for k in gitfiles.getKeys() {
+				if (<string>k).endsWith(".txt") {
+					promises.append(GithubPromiseHelper.getFileContents(transport, base, auth, <string> gitfiles.getEntry(k))
+					                .andThen(updateGitDescription));
+				} else if (<string>k).endsWith(".state") {
+					promises.append(GithubPromiseHelper.getFileContents(transport, base, auth, <string> gitfiles.getEntry(k))
+					                .andThen(updateGitState));
+				} else if (<string>k).endsWith(".mon") {
+					promises.append(GithubPromiseHelper.getFileContents(transport, base, auth, <string> gitfiles.getEntry(k))
+					                .andThen(updateGitContent));
+				}
+			}
+			return PromiseJoiner.joinAll(promises);	
 		} catch (Exception e) {
 			log "Exception reading git file contents: "+e.getMessage() at WARN;
 			log e.getStackTrace().toString() at INFO;
