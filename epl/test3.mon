@@ -1,0 +1,7 @@
+event A {}
+monitor m {
+action onload() {
+log "Test 3 running";
+on all A() {}
+}
+}
