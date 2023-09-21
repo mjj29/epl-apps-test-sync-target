@@ -395,7 +395,7 @@ event EPLFileSyncer
 				.andThen(completeGitCommit);
 		} else if gitContentURL != "" {
 			// sync github to EPL
-			(<Promise>readGitFileContents([gitDescriptionURL, gitStateURL, gitContentURL]))
+			(<Promise>readGitFileContents({".txt":gitDescriptionURL, ".state":gitStateURL, ".mon":gitContentURL}))
 				.andThen(getEPLContents)
 				.andThen(tryUpdateEPLApps);
 		} else if name != "" {
