@@ -1,0 +1,52 @@
+
+using com.apama.cumulocity.IncomingREST;
+using com.apama.cumulocity.IncomingRESTResponse;
+
+monitor SmartRuleConcurrencyTester {
+
+    action onload {
+
+        spawn responseListener() to context("foo");
+
+        IncomingREST request := new IncomingREST;
+        request.method := "PUT";
+        request.path_1 := "cep";
+        request.path_2 := "smartrules";
+        request.path_3 := "242769517";
+        request.tenantId := "t106494906";
+        request.username := "service_smartrule";
+        request.channel := "incoming_rest_response_channel";
+        request.body := {
+            <any>"id": <any>"242769517",
+            "cepModuleId": "242769517",
+            "name": "Executes an operation when alarm is received",
+            "ruleTemplateName": "thresholdSmartRule",
+            "enabled": true,
+            "enabledSources": ["722771371"],
+            "type": "c8y_SmartRule",
+            "config": {
+                <any>"alarmType": <any>"thresholdSmartRuleAlarmType",
+                "alarmText": "Threshold exceeded",
+                "kpiId": "102769516"
+            }
+        };
+        request.userRoles := {IncomingREST.CEP_MANAGEMENT_ADMIN:IncomingREST.CEP_MANAGEMENT_ADMIN};
+
+        on wait(1.0) {
+            integer count := 0;
+            while count < 10 {
+                count := count + 1;
+                request.requestId := integer.getUnique();
+                route request;
+            }
+        }
+    }
+
+    action responseListener {
+        monitor.subscribe("incoming_rest_response_channel");
+        on all IncomingRESTResponse() as resp {
+            log "IncomingREST request received response " + resp.toString() at INFO;
+        }
+    }
+
+}
