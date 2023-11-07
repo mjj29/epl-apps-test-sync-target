@@ -1,0 +1,1 @@
+monitor PYSYS_Test02 { action onload() { log "Loaded PYSYS_Test02"; on all any() {} } }
