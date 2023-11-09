@@ -1,1 +1,0 @@
-Github sync app, injected by test framework
