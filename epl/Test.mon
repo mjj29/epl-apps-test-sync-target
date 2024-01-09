@@ -37,6 +37,6 @@ monitor MySampleMonitor {
 	/** Initialize the application */
 	action onload() {
 		// Application starts here
-		log "Test" at INFO;
+		log "Test updated" at INFO;
 	}
 }
