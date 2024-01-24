@@ -1,6 +1,0 @@
-monitor m {
-	action onload()
-	{
-		log "Test application updated on tenant 2" at INFO;
-	}
-}
