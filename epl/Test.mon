@@ -1,0 +1,6 @@
+monitor m {
+	action onload()
+	{
+		log "Test application added in github" at INFO;
+	}
+}
