@@ -1,5 +1,0 @@
-monitor m {
-	action onload() {
-		log "Test EPL app updated in tenant 2" at INFO;
-	}
-}
